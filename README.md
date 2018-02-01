@@ -18,6 +18,9 @@ Freenas 11.1 jail with ElasticSearch (5.3), Logstash (5.3), and Kibana (5.3) ins
 
 ## Referenced links
 There were several gaps because of versions, platforms, and time that cropped up with the sources below, but they were an excellent start.
+
+https://www.elastic.co/guide/en/logstash/5.3/configuration.html
+
 https://extelligenceblog.it/2017/07/11/elastic-stack-suricata-idps-and-pfsense-firewall-part-1/
 
 https://blog.gufi.org/2016/02/15/elk-first-part/
@@ -60,99 +63,48 @@ echo 'nginx_enable="YES"' > /etc/rc.conf.d/nginx
 Logstash default install strictly searches for a single logstash.conf file. It is possible to change this to align with other documentation you may reference. Personally, I am sticking with the single configuration pipeline file so that debugging is easier.
 **NOTE:** The logstash pipeline is a major configuration point. I recommend saving copies of this file prior to editing.
 1. Edit logstash.conf: `ee /usr/local/etc/logstash/logstash.conf`
-2. Paste the following configuration...
-```
-input {
-	tcp {
-		type => "pfsense"
-		port => 5140
-	}
-	udp {
-		type => "pfsense"
-		port => 5140
-	}
-	beats {
-		port => 5044
-	}
-}
-
-filter {
-	if [type] == "suricataIDPS" {
-		json {
-			source => "message"
-		}
-		date {
-			match => [ "timestamp", "ISO8601" ]
-		}
-		# For Suricata Alerts events set the geoip data based upon the source address
-		if [event_type] == "alert" {
-			if [src_ip]  {
-				geoip {
-					source => "src_ip"
-					target => "geoip"
-					database => "/usr/local/share/GeoIP/GeoLite2-City.mmdb"
-				}
-				mutate {
-					convert => [ "[geoip][coordinates]", "float" ]
-				}
-			}
-			else if ![geoip.ip] {
- 				if [dest_ip]  {
- 					geoip {
-						source => "dest_ip"
-						target => "geoip"
-						database => "/usr/local/share/GeoIP/GeoLite2-City.mmdb"
-					}
-					mutate {
-						convert => [ "[geoip][coordinates]", "float" ]
-					}
-				}
-			}
-			# Add additional fields related to the signature
-			if [alert][signature] =~ /^ET/ {
-				mutate {
-					add_tag => [ "ET-Sig" ]
-					add_field => [ "ids_rule_type", "Emerging Threats" ]
-					add_field => [ "Signature_Info", "http://doc.emergingthreats.net/bin/view/Main/%{[alert][signature_id]}" ]
-				}
-			}
-			if [alert][signature] =~ /^SURICATA/ {
-				mutate {
-					add_tag => [ "SURICATA-Sig" ]
-					add_field => [ "ids_rule_type", "Suricata" ]
-				}
-			}
-		}
-	}
-}
-output {
-	# Emit events to stdout for easy debugging of what is going through logstash.
-	stdout { codec => rubydebug }
-
-	# This will use elasticsearch to store your logs.
-	elasticsearch {
-		hosts => [ "localhost:9100" ]
-		index => "logstash-%{+YYYY.MM.dd}"
-	}
-}
-```
-
+2. Paste the following configuration found in [logstash.conf](logstash.conf), as needed.
 3. Save and Exit the file editor.
 4. Start Logstash: `service logstash start`
 
+## Logstash Plugins (built in)
+### GeoIP
+Logstash already has the GeoIP plugin installed in version 5.3. All it needs are the flat file databases to geolocate an IP address. Supposedly, the `geoipupdate` port will support this, but it only seems to download legacy DAT files instead of the current, more compatible MMDB files.
+```shell
+cd /usr/ports/net/geoipupdate/ && make install clean
+```
+**Alternative:** download the MMDB files without any special script using my [geoupdate-custom.sh](geoipupdate-custom.sh).
+
+**Note:** `geoipudate` port does follows the FreeBSD /usr/local/share/GeoIP and not the Linux /usr/share/GeoIP path. My custom script is set designed to extract the files to wherever the file is locally executed from.
+
+No matter which path taken, be sure to update the files regularly. A simple crontab like the one below written to a file is sufficient. Remove the path you don't need to minimize load.
+```shell
+# top of crontab
+
+28 7 * * 5 /usr/local/bin/geoipupdate
+28 7 * * 5 /usr/local/share/GeoIP/geoipupdate-custom.sh
+# end of crontab
+```
+
+## Logstash Plugins (install required)
+**IMPORTANT:** The Logstash-plugin installer may not be executable by default. Also, the linux documented directory is inaccurate for FreeBSD. Run the following command to add execution permissions to logstash-plugin installer before proceeding.
+```shell
+chmod 744 /usr/local/logstash/bin/logstash-plugin
+```
+
+### Translate Filter
+```shell
+/usr/local/share/logstash/bin/logstash-plugin install logstash-filter-translate
+```
+The [extelligenceblog.it](https://extelligenceblog.it/2017/07/23/elastic-stack-suricata-idps-and-pfsense-firewall-part-3-logstash-pipeline-additions-suricata-alerts/) does a great bit on covering this 2/3 of the way down the page and even provides a [CSV dictionary](http://extelligenceblog.it/wp-content/uploads/2017/07/service-names-port-numbers.csv).
+
 ## Configure Kibana
 1. Create and edit kibana.yml: `ee /usr/local/etc/kibana.yml`
-2. Paste the following configuration...
-```yaml
-server.port: 5602
-server.host: "127.0.0.1"
-elasticsearch.url: "http://127.0.0.1:9100"
-logging.quiet: true
-```
+2. Paste the following configuration found in [kibana.yml](kibana.yml), as needed.
 3. Save and Exit the file editor.
 4. Start Kibana: `service kibana start`
 
-## Nginx configuration
+## Configuration Nginx
 1. Edit nginx.conf: `ee /usr/local/etc/nginx/nginx.conf`
 2. Create a vhost using the following config:
 ```
@@ -194,5 +146,5 @@ python2.7 /usr/local/bin/htpasswd.py -c -b /usr/local/etc/nginx/kibana.htpasswd 
    * Save this configuration
 2. Log into pfsense and add the latest Filebeat pkg. Use the latest `beats-[version].txz`
 ```shell
-pkg add http://pkg.freebsd.org/FreeBSD:11:amd64/latest/All/[beats-[version].txz]
+pkg add http://pkg.freebsd.org/FreeBSD:11:amd64/latest/All/ *beats-[version].txz*
 ```

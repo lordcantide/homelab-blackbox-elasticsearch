@@ -1,0 +1,22 @@
+#------------------------- File prospectors --------------------------------
+filebeat.prospectors:
+
+- input_type: log
+  paths:
+  - /var/log/suricata/*/eve.json*
+  fields_under_root: true
+  fields:
+    type: "suricataIDPS"
+    tags: ["SuricataIDPS","JSON"]
+
+#----------------------------- Logstash output --------------------------------
+output.logstash:
+  hosts: ["X.X.X.X:5044"]
+
+#---------------------------- filebeat logging -------------------------------
+
+logging.to_files: true
+logging.files:
+  path: /var/log/filebeat
+  name: filebeat.log
+  keepfiles: 7
